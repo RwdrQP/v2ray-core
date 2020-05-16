@@ -85,7 +85,8 @@ type readerOnly struct {
 }
 
 func (s *Server) Process(ctx context.Context, network net.Network, conn internet.Connection, dispatcher routing.Dispatcher) error {
-	if inbound := session.InboundFromContext(ctx); inbound != nil {
+	inbound := session.InboundFromContext(ctx)
+	if inbound != nil {
 		inbound.User = &protocol.MemoryUser{
 			Level: s.config.UserLevel,
 		}
@@ -112,6 +113,9 @@ Start:
 		if !ok || !s.config.HasAccount(user, pass) {
 			return common.Error2(conn.Write([]byte("HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"proxy\"\r\n\r\n")))
 		}
+		if inbound != nil {
+			inbound.User.Email = user
+		}
 	}
 
 	newError("request to Method [", request.Method, "] Host [", request.Host, "] with URL [", request.URL, "]").WriteToLog(session.ExportIDToError(ctx))
@@ -131,10 +135,11 @@ Start:
 	if err != nil {
 		return newError("malformed proxy host: ", host).AtWarning().Base(err)
 	}
-	log.Record(&log.AccessMessage{
+	ctx = log.ContextWithAccessMessage(ctx, &log.AccessMessage{
 		From:   conn.RemoteAddr(),
 		To:     request.URL,
 		Status: log.AccessAccepted,
+		Reason: "",
 	})
 
 	if strings.EqualFold(request.Method, "CONNECT") {

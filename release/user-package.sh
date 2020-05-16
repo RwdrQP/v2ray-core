@@ -11,79 +11,79 @@ trap 'echo -e "Aborted, error $? in command: $BASH_COMMAND"; trap ERR; exit 1' E
 # Set magic variables for current file & dir
 __dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 __file="${__dir}/$(basename "${BASH_SOURCE[0]}")"
-__base="$(basename ${__file} .sh)"
+__base="$(basename "${__file}" .sh)"
 __root="$(cd "$(dirname "${__dir}")" && pwd)" # <-- change this as it depends on your app
 
 
 NOW=$(date '+%Y%m%d-%H%M%S')
 TMP=$(mktemp -d)
+SRCDIR=$(pwd)
 
 CODENAME="user"
 BUILDNAME=$NOW
+VERSIONTAG=$(git describe --tags)
 GOPATH=$(go env GOPATH)
 
-cleanup () { rm -rf $TMP; }
+cleanup () { rm -rf "$TMP"; }
 trap cleanup INT TERM ERR
 
 get_source() {
 	echo ">>> Getting v2ray sources ..."
 	go get -insecure -v -t v2ray.com/core/...
+	SRCDIR="$GOPATH/src/v2ray.com/core"
 }
 
 build_v2() {
-	pushd $GOPATH/src/v2ray.com/core
-	echo ">>> Update source code name ..."
-	sed -i "s/^[ \t]\+codename.\+$/\tcodename = \"${CODENAME}\"/;s/^[ \t]\+build.\+$/\tbuild = \"${BUILDNAME}\"/;" core.go
+	pushd "$SRCDIR"
+	LDFLAGS="-s -w -X v2ray.com/core.codename=${CODENAME} -X v2ray.com/core.build=${BUILDNAME}  -X v2ray.com/core.version=${VERSIONTAG}"
 
 	echo ">>> Compile v2ray ..."
-	pushd $GOPATH/src/v2ray.com/core/main
-	env CGO_ENABLED=0 go build -o $TMP/v2ray${EXESUFFIX} -ldflags "-s -w"
+	env CGO_ENABLED=0 go build -o "$TMP"/v2ray"${EXESUFFIX}" -ldflags "$LDFLAGS" ./main
 	if [[ $GOOS == "windows" ]];then
-	  env CGO_ENABLED=0 go build -o $TMP/wv2ray${EXESUFFIX} -ldflags "-s -w -H windowsgui"
+	  env CGO_ENABLED=0 go build -o "$TMP"/wv2ray"${EXESUFFIX}" -ldflags "-H windowsgui $LDFLAGS" ./main
 	fi
-	popd
-
-	git checkout -- core.go
-	popd
 
 	echo ">>> Compile v2ctl ..."
-	pushd $GOPATH/src/v2ray.com/core/infra/control/main
-	env CGO_ENABLED=0 go build -o $TMP/v2ctl${EXESUFFIX} -tags confonly -ldflags "-s -w"
+	env CGO_ENABLED=0 go build -o "$TMP"/v2ctl"${EXESUFFIX}" -tags confonly -ldflags "$LDFLAGS" ./infra/control/main
 	popd
 }
 
 build_dat() {
 	echo ">>> Downloading newest geoip ..."
-	wget -qO - https://api.github.com/repos/v2ray/geoip/releases/latest \
-	| grep browser_download_url | cut -d '"' -f 4 \
-	| wget -i - -O $TMP/geoip.dat
+	curl -s -L -o "$TMP"/geoip.dat "https://github.com/v2ray/geoip/raw/release/geoip.dat"
 
 	echo ">>> Downloading newest geosite ..."
-	wget -qO - https://api.github.com/repos/v2ray/domain-list-community/releases/latest \
-	| grep browser_download_url | cut -d '"' -f 4 \
-	| wget -i - -O $TMP/geosite.dat
+	curl -s -L -o "$TMP"/geosite.dat "https://github.com/v2ray/domain-list-community/raw/release/dlc.dat"
 }
 
 copyconf() {
 	echo ">>> Copying config..."
-	pushd $GOPATH/src/v2ray.com/core/release/config
-	tar c --exclude "*.dat" . | tar x -C $TMP
+	pushd "$SRCDIR"/release/config
+	tar c --exclude "*.dat" . | tar x -C "$TMP"
 }
 
 packzip() {
 	echo ">>> Generating zip package"
-	pushd $TMP
+	pushd "$TMP"
 	local PKG=${__dir}/v2ray-custom-${GOARCH}-${GOOS}-${PKGSUFFIX}${NOW}.zip
-	zip -r $PKG .
-	echo ">>> Generated: $(basename $PKG)"
+	zip -r "$PKG" .
+	echo ">>> Generated: $(basename "$PKG")"
 }
 
 packtgz() {
 	echo ">>> Generating tgz package"
-	pushd $TMP
+	pushd "$TMP"
 	local PKG=${__dir}/v2ray-custom-${GOARCH}-${GOOS}-${PKGSUFFIX}${NOW}.tar.gz
-	tar cvfz $PKG .
-	echo ">>> Generated: $(basename $PKG)"
+	tar cvfz "$PKG" .
+	echo ">>> Generated: $(basename "$PKG")"
+}
+
+packtgzAbPath() {
+	local ABPATH="$1"
+	echo ">>> Generating tgz package at $ABPATH"
+	pushd "$TMP"
+	tar cvfz "$ABPATH" .
+	echo ">>> Generated: $ABPATH"
 }
 
 
@@ -127,6 +127,15 @@ case $arg in
 	tgz)
 		pkg=tgz
 		;;
+	abpathtgz=*)
+		pkg=${arg##abpathtgz=}
+		;;
+	codename=*)
+		CODENAME=${arg##codename=}
+		;;
+	buildname=*)
+		BUILDNAME=${arg##buildname=}
+		;;
 esac
 done
 
@@ -135,6 +144,8 @@ if [[ $nosource != 1 ]]; then
 fi
 
 export GOOS GOARCH
+echo "Build ARGS: GOOS=${GOOS} GOARCH=${GOARCH} CODENAME=${CODENAME} BUILDNAME=${BUILDNAME}"
+echo "PKG ARGS: pkg=${pkg}"
 build_v2
 
 if [[ $nodat != 1 ]]; then
@@ -147,11 +158,12 @@ fi
 
 if [[ $pkg == "zip" ]]; then
   packzip
+elif [[ $pkg == "tgz" ]]; then
+  packtgz
+else
+	packtgzAbPath "$pkg"
 fi
 
-if [[ $pkg == "tgz" ]]; then
-  packtgz
-fi
 
 cleanup
 
